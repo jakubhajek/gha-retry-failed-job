@@ -54,6 +54,10 @@ Retries are capped at 3 attempts (`github.run_attempt < 3`).
 
 The `retry-failed-jobs.yml` must exist on the default branch (`main`) before it can be dispatched via `workflow_dispatch`.
 
+## GITHUB_RUN_ATTEMPT
+
+`GITHUB_RUN_ATTEMPT` is a built-in environment variable set automatically by GitHub Actions on every job. It starts at `1` and increments each time `reRunWorkflowFailedJobs` API (or manual "Re-run failed jobs" in the UI) creates a new attempt. We use it in `test_e2e_shard1.py` to simulate a spot failure: fail when `1`, pass when `2+`.
+
 ## Running tests locally
 
 ```bash
