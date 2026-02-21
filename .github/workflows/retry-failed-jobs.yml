@@ -1,3 +1,11 @@
+# This workflow is dispatched by the retry-failed-jobs job in ci.yml.
+# It receives the CI run ID, waits for that run to complete, and then
+# calls reRunWorkflowFailedJobs to re-run only the failed jobs.
+#
+# Why a separate workflow? reRunWorkflowFailedJobs cannot be called on
+# a workflow that is still running. The CI workflow is still "in progress"
+# while the retry-failed-jobs job runs, so it must delegate to this
+# external workflow which waits for CI to finish first.
 name: Retry Failed Jobs
 
 on:
@@ -19,11 +27,14 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
+            // The run ID passed from ci.yml's retry-failed-jobs job
             const runId = parseInt('${{ inputs.run_id }}');
             const owner = context.repo.owner;
             const repo = context.repo.repo;
 
-            // Poll until the workflow run completes
+            // Poll until the CI workflow run completes.
+            // It may still be "in_progress" because the dispatch job
+            // that triggered us hasn't finished yet.
             while (true) {
               const { data: run } = await github.rest.actions.getWorkflowRun({
                 owner,
@@ -44,7 +55,8 @@ jobs:
               await new Promise(r => setTimeout(r, 10000));
             }
 
-            // Re-run only the failed jobs
+            // Re-run only the failed jobs in the CI workflow.
+            // Passed jobs keep their results — they are not re-run.
             await github.rest.actions.reRunWorkflowFailedJobs({
               owner,
               repo,
