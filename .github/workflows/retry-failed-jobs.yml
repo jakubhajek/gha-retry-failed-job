@@ -1,0 +1,53 @@
+name: Retry Failed Jobs
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Workflow run ID to retry"
+        required: true
+        type: string
+
+permissions:
+  actions: write
+
+jobs:
+  retry:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for workflow to complete and re-run failed jobs
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runId = parseInt('${{ inputs.run_id }}');
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            // Poll until the workflow run completes
+            while (true) {
+              const { data: run } = await github.rest.actions.getWorkflowRun({
+                owner,
+                repo,
+                run_id: runId,
+              });
+
+              if (run.status === 'completed') {
+                console.log(`Run ${runId} completed with conclusion: ${run.conclusion}`);
+                if (run.conclusion !== 'failure') {
+                  console.log('Run did not fail, skipping retry');
+                  return;
+                }
+                break;
+              }
+
+              console.log(`Run status: ${run.status}, waiting 10s...`);
+              await new Promise(r => setTimeout(r, 10000));
+            }
+
+            // Re-run only the failed jobs
+            await github.rest.actions.reRunWorkflowFailedJobs({
+              owner,
+              repo,
+              run_id: runId,
+            });
+            console.log(`Re-run of failed jobs triggered for run ${runId}`);
