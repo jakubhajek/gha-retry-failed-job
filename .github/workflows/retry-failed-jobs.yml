@@ -16,6 +16,7 @@ on:
         required: true
         type: string
 
+# Required for getWorkflowRun and reRunWorkflowFailedJobs API calls
 permissions:
   actions: write
 

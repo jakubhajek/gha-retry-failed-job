@@ -54,6 +54,13 @@ Retries are capped at 3 attempts (`github.run_attempt < 3`).
 
 The `retry-failed-jobs.yml` must exist on the default branch (`main`) before it can be dispatched via `workflow_dispatch`.
 
+## Key concepts
+
+- **`workflow_dispatch`** — GitHub Actions trigger that allows a workflow to be started via API, CLI, or UI. Used here to programmatically launch the retry workflow from within the CI workflow, passing the run ID as an input parameter.
+- **`reRunWorkflowFailedJobs`** — GitHub REST API that creates a new attempt on an existing workflow run, re-running only the jobs that failed. Passed jobs keep their results.
+- **`fail-fast: false`** — Prevents GitHub from cancelling remaining matrix shards when one fails. Essential for the retry pattern — all shards must finish so we know exactly which ones failed.
+- **`permissions: actions: write`** — Required for both `createWorkflowDispatch` and `reRunWorkflowFailedJobs` API calls.
+
 ## GITHUB_RUN_ATTEMPT
 
 `GITHUB_RUN_ATTEMPT` is a built-in environment variable set automatically by GitHub Actions on every job. It starts at `1` and increments each time `reRunWorkflowFailedJobs` API (or manual "Re-run failed jobs" in the UI) creates a new attempt. We use it in `test_e2e_shard1.py` to simulate a spot failure: fail when `1`, pass when `2+`.
