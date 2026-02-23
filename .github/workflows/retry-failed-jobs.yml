@@ -25,10 +25,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Wait for workflow to complete and re-run failed jobs
-        uses: actions/github-script@v8
+        uses: actions/github-script@v7
         with:
           script: |
-            // The run ID passed from ci.yml's retry-failed-jobs job
             const runId = parseInt('${{ inputs.run_id }}');
             const owner = context.repo.owner;
             const repo = context.repo.repo;
@@ -42,11 +41,19 @@ jobs:
               if (Date.now() - start > timeoutMs) {
                 throw new Error(`Timed out waiting for run ${runId} to complete after 30 minutes`);
               }
-              const { data: run } = await github.rest.actions.getWorkflowRun({
-                owner,
-                repo,
-                run_id: runId,
-              });
+
+              let run;
+              try {
+                const response = await github.rest.actions.getWorkflowRun({
+                  owner,
+                  repo,
+                  run_id: runId,
+                });
+                run = response.data;
+              } catch (error) {
+                core.error(`Failed to get workflow run ${runId}: ${error.message} (status: ${error.status})`);
+                throw error;
+              }
 
               if (run.status === 'completed') {
                 console.log(`Run ${runId} completed with conclusion: ${run.conclusion}`);
@@ -63,9 +70,14 @@ jobs:
 
             // Re-run only the failed jobs in the CI workflow.
             // Passed jobs keep their results — they are not re-run.
-            await github.rest.actions.reRunWorkflowFailedJobs({
-              owner,
-              repo,
-              run_id: runId,
-            });
-            console.log(`Re-run of failed jobs triggered for run ${runId}`);
+            try {
+              await github.rest.actions.reRunWorkflowFailedJobs({
+                owner,
+                repo,
+                run_id: runId,
+              });
+              console.log(`Re-run of failed jobs triggered for run ${runId}`);
+            } catch (error) {
+              core.error(`Failed to re-run failed jobs for run ${runId}: ${error.message} (status: ${error.status})`);
+              throw error;
+            }
