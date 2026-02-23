@@ -33,10 +33,15 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
 
-            // Poll until the CI workflow run completes.
+            // Poll until the CI workflow run completes (timeout after 30 min).
             // It may still be "in_progress" because the dispatch job
             // that triggered us hasn't finished yet.
+            const timeoutMs = 30 * 60 * 1000;
+            const start = Date.now();
             while (true) {
+              if (Date.now() - start > timeoutMs) {
+                throw new Error(`Timed out waiting for run ${runId} to complete after 30 minutes`);
+              }
               const { data: run } = await github.rest.actions.getWorkflowRun({
                 owner,
                 repo,
