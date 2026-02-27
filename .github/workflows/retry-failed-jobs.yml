@@ -1,83 +1,31 @@
-# This workflow is dispatched by the retry-failed-jobs job in ci.yml.
-# It receives the CI run ID, waits for that run to complete, and then
-# calls reRunWorkflowFailedJobs to re-run only the failed jobs.
-#
-# Why a separate workflow? reRunWorkflowFailedJobs cannot be called on
-# a workflow that is still running. The CI workflow is still "in progress"
-# while the retry-failed-jobs job runs, so it must delegate to this
-# external workflow which waits for CI to finish first.
+# Triggered automatically when the CI workflow completes.
+# If the run failed and hasn't exceeded the retry cap, re-runs only the
+# failed jobs. No polling — GitHub fires the workflow_run event when CI finishes.
 name: Retry Failed Jobs
 
 on:
-  workflow_dispatch:
-    inputs:
-      run_id:
-        description: "Workflow run ID to retry"
-        required: true
-        type: string
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
 
-# Required for getWorkflowRun and reRunWorkflowFailedJobs API calls
 permissions:
   actions: write
 
 jobs:
   retry:
     runs-on: ubuntu-latest
+    if: >-
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.run_attempt < 3
     steps:
-      - name: Wait for workflow to complete and re-run failed jobs
+      - name: Re-run failed jobs
         uses: actions/github-script@v7
         with:
           script: |
-            const runId = parseInt('${{ inputs.run_id }}');
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-
-            // Poll until the CI workflow run completes (timeout after 30 min).
-            // It may still be "in_progress" because the dispatch job
-            // that triggered us hasn't finished yet.
-            const timeoutMs = 30 * 60 * 1000;
-            const start = Date.now();
-            while (true) {
-              if (Date.now() - start > timeoutMs) {
-                throw new Error(`Timed out waiting for run ${runId} to complete after 30 minutes`);
-              }
-
-              let run;
-              try {
-                const response = await github.rest.actions.getWorkflowRun({
-                  owner,
-                  repo,
-                  run_id: runId,
-                });
-                run = response.data;
-              } catch (error) {
-                core.error(`Failed to get workflow run ${runId}: ${error.message} (status: ${error.status})`);
-                throw error;
-              }
-
-              if (run.status === 'completed') {
-                console.log(`Run ${runId} completed with conclusion: ${run.conclusion}`);
-                if (run.conclusion !== 'failure') {
-                  console.log('Run did not fail, skipping retry');
-                  return;
-                }
-                break;
-              }
-
-              console.log(`Run status: ${run.status}, waiting 10s...`);
-              await new Promise(r => setTimeout(r, 10000));
-            }
-
-            // Re-run only the failed jobs in the CI workflow.
-            // Passed jobs keep their results — they are not re-run.
-            try {
-              await github.rest.actions.reRunWorkflowFailedJobs({
-                owner,
-                repo,
-                run_id: runId,
-              });
-              console.log(`Re-run of failed jobs triggered for run ${runId}`);
-            } catch (error) {
-              core.error(`Failed to re-run failed jobs for run ${runId}: ${error.message} (status: ${error.status})`);
-              throw error;
-            }
+            const runId = ${{ github.event.workflow_run.id }};
+            await github.rest.actions.reRunWorkflowFailedJobs({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: runId,
+            });
+            console.log(`Re-run triggered for run ${runId} (attempt ${{ github.event.workflow_run.run_attempt }})`);
