@@ -8,8 +8,8 @@ When running CI on spot instances, AWS can terminate the instance at any time, c
 
 1. CI workflow runs unit tests + 2 e2e shards
 2. Shard 1 fails on first attempt (simulates spot termination using `GITHUB_RUN_ATTEMPT` env var)
-3. `retry-failed-jobs` job dispatches a separate `retry-failed-jobs.yml` workflow
-4. That workflow polls until CI completes, then calls `reRunWorkflowFailedJobs` API
+3. GitHub fires a `workflow_run` event when CI completes
+4. `retry-failed-jobs.yml` picks up the event and calls `reRunWorkflowFailedJobs` API
 5. Only the failed shard is re-run on attempt 2 — passed jobs are skipped
 
 ## Expected results
@@ -19,7 +19,6 @@ When running CI on spot instances, AWS can terminate the instance at any time, c
 | unit-tests | pass | skipped |
 | e2e-shards (0) | pass | skipped |
 | e2e-shards (1) | **FAIL** | pass |
-| retry-failed-jobs | dispatches retry | skipped |
 
 The overall workflow run should end as **success** after attempt 2.
 
@@ -30,36 +29,46 @@ Attempt 1:
   CI workflow starts
     ├── unit-tests ✅
     ├── e2e-shards (0) ✅
-    ├── e2e-shards (1) ❌  (GITHUB_RUN_ATTEMPT=1, test fails)
-    └── retry-failed-jobs → dispatches retry-failed-jobs.yml
-  CI workflow completes (status: failure)
+    └── e2e-shards (1) ❌  (GITHUB_RUN_ATTEMPT=1, test fails)
+  CI workflow completes (conclusion: failure)
 
-  retry-failed-jobs.yml starts
-    └── Polls CI run status... completed → calls reRunWorkflowFailedJobs
+  GitHub fires workflow_run event → retry-failed-jobs.yml
+    └── Calls reRunWorkflowFailedJobs
 
 Attempt 2:
   CI workflow re-runs ONLY failed jobs
     ├── unit-tests (skipped — already passed)
     ├── e2e-shards (0) (skipped — already passed)
-    ├── e2e-shards (1) ✅  (GITHUB_RUN_ATTEMPT=2, test passes)
-    └── retry-failed-jobs (skipped — no failure)
-  CI workflow completes (status: success)
+    └── e2e-shards (1) ✅  (GITHUB_RUN_ATTEMPT=2, test passes)
+  CI workflow completes (conclusion: success)
+
+  GitHub fires workflow_run event → retry-failed-jobs.yml
+    └── Skipped (conclusion != failure)
 ```
 
-Retries are capped at 3 attempts (`github.run_attempt < 3`).
+Retries are capped at 3 attempts (`run_attempt < 3`).
 
-## Why two workflows
+## How it works
 
-`reRunWorkflowFailedJobs` cannot be called on a workflow that is still running. Since the retry job is part of the CI workflow, it cannot re-run itself. Instead, it dispatches a separate workflow (`retry-failed-jobs.yml`) which waits for CI to complete and then triggers the re-run.
+The CI workflow (`ci.yml`) has no retry logic — it only runs tests. A separate workflow (`retry-failed-jobs.yml`) listens for CI completions via the `workflow_run` event:
 
-The `retry-failed-jobs.yml` must exist on the default branch (`main`) before it can be dispatched via `workflow_dispatch`.
+```yaml
+on:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+```
+
+When CI finishes with `conclusion: failure` and `run_attempt < 3`, the retry workflow calls `reRunWorkflowFailedJobs` to re-run only the failed jobs. No polling, no dispatch — GitHub's event system connects the two workflows automatically.
+
+The only connection between the workflows is the **name string** `'CI'` matching `name: CI` in `ci.yml`.
 
 ## Key concepts
 
-- **`workflow_dispatch`** — GitHub Actions trigger that allows a workflow to be started via API, CLI, or UI. Used here to programmatically launch the retry workflow from within the CI workflow, passing the run ID as an input parameter.
+- **`workflow_run`** — GitHub Actions event that fires when a referenced workflow completes. The triggered workflow always runs from the default branch. No polling or dispatch needed.
 - **`reRunWorkflowFailedJobs`** — GitHub REST API that creates a new attempt on an existing workflow run, re-running only the jobs that failed. Passed jobs keep their results.
 - **`fail-fast: false`** — Prevents GitHub from cancelling remaining matrix shards when one fails. Essential for the retry pattern — all shards must finish so we know exactly which ones failed.
-- **`permissions: actions: write`** — Required for both `createWorkflowDispatch` and `reRunWorkflowFailedJobs` API calls.
+- **`permissions: actions: write`** — Required on the retry workflow for the `reRunWorkflowFailedJobs` API call.
 
 ## GITHUB_RUN_ATTEMPT
 
