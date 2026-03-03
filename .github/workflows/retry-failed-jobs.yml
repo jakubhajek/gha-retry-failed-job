@@ -1,6 +1,8 @@
 # Triggered automatically when the CI workflow completes.
-# If the run failed and hasn't exceeded the retry cap, re-runs only the
-# failed jobs. No polling — GitHub fires the workflow_run event when CI finishes.
+# If the run failed due to infrastructure issues (spot termination, runner
+# disconnection) and hasn't exceeded the retry cap, re-runs only the failed
+# jobs. Does NOT retry code bugs (test/lint failures).
+# No polling — GitHub fires the workflow_run event when CI finishes.
 name: Retry Failed Jobs
 
 on:
@@ -15,11 +17,58 @@ jobs:
   retry:
     runs-on: ubuntu-latest
     if: >-
-      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.conclusion != 'success' &&
       github.event.workflow_run.run_attempt < 3
     steps:
+      - name: Check if failure is retryable
+        id: check
+        uses: actions/github-script@v8
+        with:
+          script: |
+            // Get the run ID from the event that triggered this workflow
+            const runId = ${{ github.event.workflow_run.id }};
+
+            // Fetch all jobs for that run (only the latest attempt, not previous retries)
+            const { data } = await github.rest.actions.listJobsForWorkflowRun({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: runId,
+              filter: 'latest',
+            });
+
+            // Keep only jobs that failed (ignore success, skipped, etc.)
+            const failedJobs = data.jobs.filter(j => j.conclusion === 'failure');
+
+            let shouldRetry = false;
+
+            // Loop through each failed job
+            for (const job of failedJobs) {
+              // Get steps that were cancelled (runner died mid-step) — indicates infrastructure issue (spot termination, runner killed)
+              const cancelledSteps = job.steps.filter(s => s.conclusion === 'cancelled');
+              // Get steps that explicitly failed (non-zero exit code) — indicates a code bug
+              const failedSteps = job.steps.filter(s => s.conclusion === 'failure');
+
+              console.log(`Job "${job.name}" — conclusion: ${job.conclusion}`);
+              for (const s of cancelledSteps) console.log(`  cancelled step: "${s.name}"`);
+              for (const s of failedSteps) console.log(`  failed step: "${s.name}"`);
+
+              if (cancelledSteps.length > 0) {
+                // Step was cancelled mid-run — spot termination or runner killed
+                console.log(`Job "${job.name}" has cancelled steps — retryable`);
+                shouldRetry = true;
+              } else if (failedSteps.length > 0) {
+                // Step explicitly failed — code bug, don't retry
+                console.log(`Job "${job.name}" has failed steps — not retryable`);
+                shouldRetry = false;
+                break;
+              }
+            }
+            console.log(`Should retry: ${shouldRetry}`);
+            core.setOutput('should_retry', String(shouldRetry));
+
       - name: Re-run failed jobs
-        uses: actions/github-script@v7
+        if: steps.check.outputs.should_retry == 'true'
+        uses: actions/github-script@v8
         with:
           script: |
             const runId = ${{ github.event.workflow_run.id }};
